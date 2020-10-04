@@ -1,0 +1,1 @@
+# gsheets-finance-parser
