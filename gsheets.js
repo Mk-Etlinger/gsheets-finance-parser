@@ -3,11 +3,18 @@
  * Parses a CSV and inserts it into Google Sheets
  */
 const fs = require('fs');
+const path = require("path")
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const Papa = require('papaparse');
 
 const config = require('./config.js');
-const { sheetId, apiCredsPath } = config
+const { sheetId, apiCredsPath, serviceNameConfigKey } = config
+const currentServiceConfig = config[serviceNameConfigKey];
+
+const normalizeHeadersFunctions = {
+  schwab: mapSchwabHeadersToSheetHeaders,
+  capitalOne: mapCapitalOneHeadersToSheetHeaders,
+}
 
 if (!fs.existsSync(apiCredsPath)) {
   throw new Error(`
@@ -49,14 +56,15 @@ async function insertCsvToGoogleSheet(sheetId) {
  */
 function normalizeCsv() {
   // TODO: Do we keep config global? Or use a class?
-  const csvStream = fs.createReadStream(config.csvPath);
+  const csvStream = fs.createReadStream(currentServiceConfig.csvPath);
   const data = [];
 
   Papa.parse(csvStream, {
     header: true,
     step: async function(result) {
       // TODO: Make map function dynamic/able to handle different bank's csvs
-      const normalizedData = mapCapitalOneHeadersToSheetHeaders(result.data);
+      const normalizeHeadersFunction = normalizeHeadersFunctions[serviceNameConfigKey];
+      const normalizedData = normalizeHeadersFunction(result.data);
       console.log('Parsing row: ', normalizedData);
 
       data.push(normalizedData);
@@ -68,8 +76,9 @@ function normalizeCsv() {
       console.log('parsing complete');
 
       const csv = Papa.unparse(data);
-      // TODO: make this dynamic
-      fs.writeFileSync('./capital_one_transformed.csv', csv);
+      const filename = path.basename(currentServiceConfig.csvPath, '.csv');
+
+      fs.writeFileSync(`./${filename}_transformed.csv`, csv);
     }
   });
 
@@ -79,22 +88,59 @@ function normalizeCsv() {
 /**
  * mapCapitalOneHeadersToSheetHeaders
  * Handles normalizing data from csv to google sheet
- * @param {Object[]} args are passed in from the CLI flags like --sheetId
+ * @param {Object[]} data
  * @return {Object[]} normalized data
  */
 function mapCapitalOneHeadersToSheetHeaders(data) {
   const normalizedData = {}
   for (const [key, value] of Object.entries(data)) {
-    const keyNormalized = config.capitalOneHeaders[key];
+    const keyNormalized = currentServiceConfig.headerNormalization[key];
     let valueCategorized;
 
     if (!keyNormalized) {
       normalizedData[key] = value;
     }
     if (key === 'Category') {
-      valueCategorized = config.categorize[value];
+      valueCategorized = currentServiceConfig.categorize[value];
     }
     if (value === '' && (key === 'Debit' || key === 'Credit')) {
+      continue;
+    }
+    
+    normalizedData[keyNormalized] = valueCategorized || value;
+  };
+
+  return normalizedData;
+}
+
+/**
+ * mapSchwabHeadersToSheetHeaders
+ * Handles normalizing data from csv to google sheet
+ * @param {Object[]} data
+ * @return {Object[]} normalized data
+ */
+function mapSchwabHeadersToSheetHeaders(data) {
+  const normalizedData = {}
+  console.log('shwab row: ', data);
+  
+  for (let [key, value] of Object.entries(data)) {
+    const keyNormalized = currentServiceConfig.headerNormalization[key];
+    let valueCategorized;
+
+    if (key === 'Check #') {
+      continue;
+    }
+    if (key === 'Type') {
+      value = normalizedData.Timestamp;
+    }
+    if (key === 'RunningBalance') {
+      value = normalizedData['Item'];
+      valueCategorized = currentServiceConfig.categorize[value];
+    }
+    if (!keyNormalized) {
+      normalizedData[key] = value;
+    }
+    if (value === '' && (key === 'Withdrawal (-)' || key === 'Deposit (+)')) {
       continue;
     }
     
